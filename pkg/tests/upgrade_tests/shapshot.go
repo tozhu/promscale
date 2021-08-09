@@ -31,6 +31,7 @@ type dbSnapshot struct {
 var schemas = []string{
 	"_prom_catalog",
 	"_prom_ext",
+	"_ps_trace",
 	"_timescaledb_cache",
 	"_timescaledb_catalog",
 	"_timescaledb_config",
@@ -47,6 +48,7 @@ var schemas = []string{
 	"prom_info",
 	"prom_metric",
 	"prom_series",
+	"ps_trace",
 	"public",
 	"timescaledb_information",
 }
@@ -54,6 +56,7 @@ var schemas = []string{
 var schemasWOTimescaleDB = []string{
 	"_prom_catalog",
 	"_prom_ext",
+	"_ps_trace",
 	"information_schema",
 	"pg_catalog",
 	"pg_temp_1",
@@ -66,6 +69,7 @@ var schemasWOTimescaleDB = []string{
 	"prom_info",
 	"prom_metric",
 	"prom_series",
+	"ps_trace",
 	"public",
 }
 
@@ -73,6 +77,7 @@ var ourSchemas = []string{
 	"public",
 	"_prom_catalog",
 	"_prom_ext",
+	"_ps_trace",
 	"prom_api",
 	"prom_data",
 	"prom_data_exemplar",
@@ -80,6 +85,7 @@ var ourSchemas = []string{
 	"prom_info",
 	"prom_metric",
 	"prom_series",
+	"ps_trace",
 }
 
 type schemaInfo struct {
