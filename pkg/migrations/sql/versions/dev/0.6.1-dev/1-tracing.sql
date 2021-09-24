@@ -41,7 +41,7 @@ DO $$
 DECLARE
    new_path text;
 BEGIN
-   new_path := current_setting('search_path') || format(',%L,%L,%L,%L', 'SCHEMA_EXT', 'SCHEMA_PROM', 'SCHEMA_METRIC', 'SCHEMA_CATALOG', 'SCHEMA_TRACING_PUBLIC');
+   new_path := current_setting('search_path') || format(',%L', 'SCHEMA_TRACING_PUBLIC');
    execute format('ALTER DATABASE %I SET search_path = %s', current_database(), new_path);
    execute format('SET search_path = %s', new_path);
 END
@@ -57,23 +57,44 @@ GRANT USAGE ON SCHEMA SCHEMA_TRACING TO prom_reader;
 CREATE SCHEMA IF NOT EXISTS SCHEMA_TRACING_PUBLIC;
 GRANT USAGE ON SCHEMA SCHEMA_TRACING_PUBLIC TO prom_reader;
 
-CREATE DOMAIN SCHEMA_TRACING_PUBLIC.trace_id uuid NOT NULL CHECK (value != '00000000-0000-0000-0000-000000000000');
-GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.trace_id TO prom_reader;
+CALL SCHEMA_CATALOG.execute_everywhere('tracing_types', $ee$ DO $$ BEGIN
+    CREATE DOMAIN SCHEMA_TRACING_PUBLIC.trace_id uuid NOT NULL CHECK (value != '00000000-0000-0000-0000-000000000000');
+    GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.trace_id TO prom_reader;
 
-CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_k text NOT NULL CHECK (value != '');
-GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_k TO prom_reader;
+    CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_k text NOT NULL CHECK (value != '');
+    GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_k TO prom_reader;
 
-CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_v jsonb NOT NULL;
-GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_v TO prom_reader;
+    CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_v jsonb NOT NULL;
+    GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_v TO prom_reader;
 
-CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_map jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(value) = 'object');
-GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_map TO prom_reader;
+    CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_map jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(value) = 'object');
+    GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_map TO prom_reader;
 
-CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_matchers SCHEMA_TRACING_PUBLIC.tag_map[] NOT NULL;
-GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_matchers TO prom_reader;
+    CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_matchers SCHEMA_TRACING_PUBLIC.tag_map[] NOT NULL;
+    GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_matchers TO prom_reader;
 
-CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_type smallint NOT NULL; --bitmap, may contain several types
-GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_type TO prom_reader;
+    CREATE DOMAIN SCHEMA_TRACING_PUBLIC.tag_type smallint NOT NULL; --bitmap, may contain several types
+    GRANT USAGE ON DOMAIN SCHEMA_TRACING_PUBLIC.tag_type TO prom_reader;
+
+    CREATE TYPE SCHEMA_TRACING_PUBLIC.span_kind AS ENUM
+    (
+        'SPAN_KIND_UNSPECIFIED',
+        'SPAN_KIND_INTERNAL',
+        'SPAN_KIND_SERVER',
+        'SPAN_KIND_CLIENT',
+        'SPAN_KIND_PRODUCER',
+        'SPAN_KIND_CONSUMER'
+    );
+    GRANT USAGE ON TYPE SCHEMA_TRACING_PUBLIC.span_kind TO prom_reader;
+
+    CREATE TYPE SCHEMA_TRACING_PUBLIC.status_code AS ENUM
+    (
+        'STATUS_CODE_UNSET',
+        'STATUS_CODE_OK',
+        'STATUS_CODE_ERROR'
+    );
+    GRANT USAGE ON TYPE SCHEMA_TRACING_PUBLIC.status_code TO prom_reader;
+END $$ $ee$);
 
 CREATE TABLE SCHEMA_TRACING.tag_key
 (
@@ -125,24 +146,6 @@ END
 $block$
 ;
 
-CREATE TYPE SCHEMA_TRACING_PUBLIC.span_kind AS ENUM
-(
-    'SPAN_KIND_UNSPECIFIED',
-    'SPAN_KIND_INTERNAL',
-    'SPAN_KIND_SERVER',
-    'SPAN_KIND_CLIENT',
-    'SPAN_KIND_PRODUCER',
-    'SPAN_KIND_CONSUMER'
-);
-GRANT USAGE ON TYPE SCHEMA_TRACING_PUBLIC.span_kind TO prom_reader;
-
-CREATE TYPE SCHEMA_TRACING_PUBLIC.status_code AS ENUM
-(
-    'STATUS_CODE_UNSET',
-    'STATUS_CODE_OK',
-    'STATUS_CODE_ERROR'
-);
-GRANT USAGE ON TYPE SCHEMA_TRACING_PUBLIC.status_code TO prom_reader;
 
 CREATE TABLE IF NOT EXISTS SCHEMA_TRACING.span_name
 (
