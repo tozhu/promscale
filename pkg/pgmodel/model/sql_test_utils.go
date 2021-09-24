@@ -22,6 +22,7 @@ import (
 	"github.com/timescale/promscale/pkg/pgmodel/common/errors"
 	"github.com/timescale/promscale/pkg/pgmodel/model/pgutf8str"
 	"github.com/timescale/promscale/pkg/pgxconn"
+	"go.opentelemetry.io/collector/model/pdata"
 )
 
 type SqlRecorder struct {
@@ -484,6 +485,30 @@ type MockInserter struct {
 	InsertedData    []map[string][]Insertable
 	InsertSeriesErr error
 	InsertDataErr   error
+}
+
+func (m *MockInserter) InsertSpanLinks(ctx context.Context, links pdata.SpanLinkSlice, traceID [16]byte, spanID [8]byte, spanStartTime time.Time) error {
+	panic("not implemented") // TODO: Implement
+}
+
+func (m *MockInserter) InsertSpanEvents(ctx context.Context, events pdata.SpanEventSlice, traceID [16]byte, spanID [8]byte) error {
+	panic("not implemented") // TODO: Implement
+}
+
+func (m *MockInserter) InsertSpan(ctx context.Context, span pdata.Span, nameID pgtype.Int8, instLibID pgtype.Int8, rSchemaURLID pgtype.Int8, resourceTags pdata.AttributeMap) error {
+	panic("not implemented") // TODO: Implement
+}
+
+func (m *MockInserter) InsertSchemaURL(ctx context.Context, sURL string) (id pgtype.Int8, err error) {
+	panic("not implemented") // TODO: Implement
+}
+
+func (m *MockInserter) InsertSpanName(ctx context.Context, name string) (id pgtype.Int8, err error) {
+	panic("not implemented") // TODO: Implement
+}
+
+func (m *MockInserter) InsertInstrumentationLibrary(ctx context.Context, name string, version string, sURL string) (id pgtype.Int8, err error) {
+	panic("not implemented") // TODO: Implement
 }
 
 func (m *MockInserter) Close() {}

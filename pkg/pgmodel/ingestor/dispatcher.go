@@ -6,11 +6,14 @@ package ingestor
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgtype"
 	"github.com/timescale/promscale/pkg/log"
 	"github.com/timescale/promscale/pkg/pgmodel/cache"
 	"github.com/timescale/promscale/pkg/pgmodel/common/schema"
@@ -18,12 +21,20 @@ import (
 	"github.com/timescale/promscale/pkg/pgmodel/model"
 	"github.com/timescale/promscale/pkg/pgxconn"
 	tput "github.com/timescale/promscale/pkg/util/throughput"
+	"go.opentelemetry.io/collector/model/pdata"
 )
+
+type TagType uint
 
 const (
 	MetricBatcherChannelCap = 1000
 	finalizeMetricCreation  = "CALL " + schema.Catalog + ".finalize_metric_creation()"
 	getEpochSQL             = "SELECT current_epoch FROM " + schema.Catalog + ".ids_epoch LIMIT 1"
+
+	SpanTagType TagType = 1 << iota
+	ResourceTagType
+	EventTagType
+	LinkTagType
 )
 
 // pgxDispatcher redirects incoming samples to the appropriate metricBatcher
@@ -176,6 +187,239 @@ func (p *pgxDispatcher) Close() {
 	close(p.copierReadRequestCh)
 	close(p.doneChannel)
 	p.doneWG.Wait()
+}
+
+func (p *pgxDispatcher) InsertSchemaURL(ctx context.Context, sURL string) (id pgtype.Int8, err error) {
+	if sURL == "" {
+		id.Status = pgtype.Null
+		return id, nil
+	}
+	err = p.conn.QueryRow(ctx, "INSERT INTO "+schema.Trace+".schema_url (url) VALUES ( $1 ) RETURNING (id)", sURL).Scan(&id)
+	return id, err
+}
+
+func (p *pgxDispatcher) InsertSpanName(ctx context.Context, name string) (id pgtype.Int8, err error) {
+	if name == "" {
+		id.Status = pgtype.Null
+		return id, nil
+	}
+	err = p.conn.QueryRow(ctx, "INSERT INTO "+schema.Trace+".span_name (name) VALUES ( $1 ) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING (id)", name).Scan(&id)
+	return id, err
+}
+
+func (p *pgxDispatcher) InsertInstrumentationLibrary(ctx context.Context, name, version, schemaURL string) (id pgtype.Int8, err error) {
+	if name == "" || version == "" {
+		id.Status = pgtype.Null
+		return id, nil
+	}
+	var sID pgtype.Int8
+	if schemaURL != "" {
+		schemaURLID, err := p.InsertSchemaURL(ctx, schemaURL)
+		if err != nil {
+			return id, err
+		}
+		err = sID.Set(schemaURLID)
+		if err != nil {
+			return id, err
+		}
+	} else {
+		sID.Status = pgtype.Null
+	}
+
+	err = p.conn.QueryRow(ctx, "INSERT INTO "+schema.Trace+".instrumentation_lib (name, version, schema_url_id) VALUES ( $1, $2, $3 ) RETURNING (id)", name, version, sID).Scan(&id)
+	return id, err
+}
+
+func (p *pgxDispatcher) insertTags(ctx context.Context, tags map[string]interface{}, typ TagType) error {
+	for k, v := range tags {
+		_, err := p.conn.Exec(ctx, "SELECT "+schema.TracePublic+".put_tag_key($1, $2::"+schema.TracePublic+".tag_type)", k, typ)
+
+		if err != nil {
+			return err
+		}
+
+		val, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+
+		_, err = p.conn.Exec(ctx, "SELECT "+schema.TracePublic+".put_tag($1, $2, $3::"+schema.TracePublic+".tag_type)",
+			k,
+			string(val),
+			typ,
+		)
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *pgxDispatcher) InsertSpanLinks(ctx context.Context, links pdata.SpanLinkSlice, traceID [16]byte, spanID [8]byte, spanStartTime time.Time) error {
+	spanIDInt := convertByteArrayToInt64(spanID)
+	for i := 0; i < links.Len(); i++ {
+		link := links.At(i)
+		linkedSpanIDInt := convertByteArrayToInt64(link.SpanID().Bytes())
+
+		rawTags := link.Attributes().AsRaw()
+		if err := p.insertTags(ctx, rawTags, LinkTagType); err != nil {
+			return err
+		}
+		jsonTags, err := json.Marshal(rawTags)
+		if err != nil {
+			return err
+		}
+		_, err = p.conn.Exec(ctx, "INSERT INTO "+schema.Trace+".link (trace_id, span_id, span_start_time, linked_trace_id, linked_span_id, trace_state, tags, dropped_tags_count, link_nbr) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9 )",
+			getUUID(traceID),
+			spanIDInt,
+			spanStartTime,
+			getUUID(link.TraceID().Bytes()),
+			linkedSpanIDInt,
+			link.TraceState(),
+			string(jsonTags),
+			link.DroppedAttributesCount(),
+			i,
+		)
+
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *pgxDispatcher) InsertSpanEvents(ctx context.Context, events pdata.SpanEventSlice, traceID [16]byte, spanID [8]byte) error {
+	spanIDInt := convertByteArrayToInt64(spanID)
+	for i := 0; i < events.Len(); i++ {
+		event := events.At(i)
+		rawTags := event.Attributes().AsRaw()
+		if err := p.insertTags(ctx, rawTags, EventTagType); err != nil {
+			return err
+		}
+		jsonTags, err := json.Marshal(rawTags)
+		if err != nil {
+			return err
+		}
+		_, err = p.conn.Exec(ctx, "INSERT INTO "+schema.Trace+".event (time, trace_id, span_id, name, event_nbr, tags, dropped_tags_count) VALUES ( $1, $2, $3, $4, $5, $6, $7 )",
+			event.Timestamp().AsTime(),
+			getUUID(traceID),
+			spanIDInt,
+			event.Name(),
+			i,
+			string(jsonTags),
+			event.DroppedAttributesCount(),
+		)
+
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func convertByteArrayToInt64(buf [8]byte) int64 {
+	ux := binary.BigEndian.Uint64(buf[:])
+
+	x := int64(ux >> 1)
+	if ux&1 != 0 {
+		x = ^x
+	}
+
+	return x
+}
+
+func getUUID(buf [16]byte) pgtype.UUID {
+	return pgtype.UUID{
+		Bytes:  buf,
+		Status: pgtype.Present,
+	}
+}
+
+func getEventTimeRange(events pdata.SpanEventSlice) (result pgtype.Tstzrange) {
+	if events.Len() == 0 {
+		_ = result.Set(nil)
+		return result
+	}
+
+	var lowerTime, upperTime time.Time
+
+	for i := 0; i < events.Len(); i++ {
+		eventTime := events.At(i).Timestamp().AsTime()
+
+		if lowerTime.IsZero() || eventTime.Before(lowerTime) {
+			lowerTime = eventTime
+		}
+		if upperTime.IsZero() || eventTime.After(upperTime) {
+			upperTime = eventTime
+		}
+	}
+
+	result = pgtype.Tstzrange{
+		Lower:     pgtype.Timestamptz{Time: lowerTime, Status: pgtype.Present},
+		Upper:     pgtype.Timestamptz{Time: upperTime, Status: pgtype.Present},
+		LowerType: pgtype.Inclusive,
+		UpperType: pgtype.Exclusive,
+		Status:    pgtype.Present,
+	}
+
+	return result
+}
+
+func (p *pgxDispatcher) InsertSpan(ctx context.Context, span pdata.Span, nameID, instLibID, rSchemaURLID pgtype.Int8, resourceTags pdata.AttributeMap) error {
+	spanIDInt := convertByteArrayToInt64(span.SpanID().Bytes())
+	parentSpanIDInt := convertByteArrayToInt64(span.ParentSpanID().Bytes())
+	rawResourceTags := resourceTags.AsRaw()
+	if err := p.insertTags(ctx, rawResourceTags, ResourceTagType); err != nil {
+		return err
+	}
+	jsonResourceTags, err := json.Marshal(rawResourceTags)
+	if err != nil {
+		return err
+	}
+	rawTags := span.Attributes().AsRaw()
+	if err := p.insertTags(ctx, rawTags, SpanTagType); err != nil {
+		return err
+	}
+	jsonTags, err := json.Marshal(rawTags)
+	if err != nil {
+		return err
+	}
+
+	eventTimeRange := getEventTimeRange(span.Events())
+
+	_, err = p.conn.Exec(
+		ctx,
+		"INSERT INTO "+schema.Trace+`.span 
+			(trace_id, span_id, trace_state, parent_span_id, name_id, 
+			span_kind, start_time, end_time, span_tags, dropped_tags_count,
+			event_time, dropped_events_count, dropped_link_count, status_code,
+			status_message, instrumentation_lib_id, resource_tags, resource_dropped_tags_count,
+			resource_schema_url_id) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+		getUUID(span.TraceID().Bytes()),
+		spanIDInt,
+		span.TraceState(),
+		parentSpanIDInt,
+		nameID,
+		span.Kind().String(),
+		span.StartTimestamp().AsTime(),
+		span.EndTimestamp().AsTime(),
+		string(jsonTags),
+		span.DroppedAttributesCount(),
+		eventTimeRange,
+		span.DroppedEventsCount(),
+		span.DroppedLinksCount(),
+		span.Status().Code().String(),
+		span.Status().Message(),
+		instLibID,
+		string(jsonResourceTags),
+		0, // TODO: Add resource_dropped_tags_count when it gets exposed upstream.
+		rSchemaURLID,
+	)
+
+	return err
 }
 
 // InsertTs inserts a batch of data into the database.

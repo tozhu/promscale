@@ -5,14 +5,17 @@
 package ingestor
 
 import (
+	"context"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgtype"
 	"github.com/timescale/promscale/pkg/pgmodel/cache"
 	"github.com/timescale/promscale/pkg/pgmodel/common/errors"
 	"github.com/timescale/promscale/pkg/pgmodel/model"
 	"github.com/timescale/promscale/pkg/pgxconn"
 	"github.com/timescale/promscale/pkg/prompb"
+	"go.opentelemetry.io/collector/model/pdata"
 )
 
 type Cfg struct {
@@ -65,6 +68,52 @@ type result struct {
 	id      int8
 	numRows uint64
 	err     error
+}
+
+func (ingestor *DBIngestor) IngestTraces(ctx context.Context, r pdata.Traces) error {
+	rSpans := r.ResourceSpans()
+	for i := 0; i < rSpans.Len(); i++ {
+		rSpan := rSpans.At(i)
+
+		var rSchemaURLID pgtype.Int8
+		var err error
+		rSchemaURLID, err = ingestor.dispatcher.InsertSchemaURL(ctx, rSpan.SchemaUrl())
+		if err != nil {
+			return err
+		}
+
+		instLibSpans := rSpan.InstrumentationLibrarySpans()
+		for j := 0; j < instLibSpans.Len(); j++ {
+			instLibSpan := instLibSpans.At(j)
+			instLib := instLibSpan.InstrumentationLibrary()
+			instLibID, err := ingestor.dispatcher.InsertInstrumentationLibrary(ctx, instLib.Name(), instLib.Version(), instLibSpan.SchemaUrl())
+			if err != nil {
+				return err
+			}
+
+			spans := instLibSpan.Spans()
+
+			for k := 0; k < spans.Len(); k++ {
+				span := spans.At(k)
+
+				nameID, err := ingestor.dispatcher.InsertSpanName(ctx, span.Name())
+				if err != nil {
+					return err
+				}
+				if err = ingestor.dispatcher.InsertSpanEvents(ctx, span.Events(), span.TraceID().Bytes(), span.SpanID().Bytes()); err != nil {
+					return err
+				}
+				if err = ingestor.dispatcher.InsertSpanLinks(ctx, span.Links(), span.TraceID().Bytes(), span.SpanID().Bytes(), span.StartTimestamp().AsTime()); err != nil {
+					return err
+				}
+				if err = ingestor.dispatcher.InsertSpan(ctx, span, nameID, instLibID, rSchemaURLID, rSpan.Resource().Attributes()); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // Ingest transforms and ingests the timeseries data into Timescale database.

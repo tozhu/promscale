@@ -185,7 +185,7 @@ CREATE TABLE IF NOT EXISTS SCHEMA_TRACING.span
     name_id bigint NOT NULL,
     start_time timestamptz NOT NULL,
     end_time timestamptz NOT NULL,
-    trace_state text CHECK (trace_state != ''),
+    trace_state text,
     span_kind SCHEMA_TRACING_PUBLIC.span_kind,
     span_tags SCHEMA_TRACING_PUBLIC.tag_map NOT NULL,
     dropped_tags_count int NOT NULL default 0,
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS SCHEMA_TRACING.link
     linked_trace_id SCHEMA_TRACING_PUBLIC.trace_id NOT NULL,
     linked_span_id bigint NOT NULL,
     link_nbr int NOT NULL DEFAULT 0,
-    trace_state text CHECK (trace_state != ''),
+    trace_state text,
     tags SCHEMA_TRACING_PUBLIC.tag_map NOT NULL,
     dropped_tags_count int NOT NULL DEFAULT 0
 );

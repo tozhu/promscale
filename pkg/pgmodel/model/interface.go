@@ -5,10 +5,12 @@
 package model
 
 import (
+	"context"
 	"math"
 	"time"
 
 	"github.com/jackc/pgtype"
+	"go.opentelemetry.io/collector/model/pdata"
 )
 
 const (
@@ -31,6 +33,12 @@ type Metadata struct {
 
 // Dispatcher is responsible for inserting label, series and data into the storage.
 type Dispatcher interface {
+	InsertSpanLinks(ctx context.Context, links pdata.SpanLinkSlice, traceID [16]byte, spanID [8]byte, spanStartTime time.Time) error
+	InsertSpanEvents(ctx context.Context, events pdata.SpanEventSlice, traceID [16]byte, spanID [8]byte) error
+	InsertSpan(ctx context.Context, span pdata.Span, nameID, instLibID, rSchemaURLID pgtype.Int8, resourceTags pdata.AttributeMap) error
+	InsertSchemaURL(ctx context.Context, sURL string) (id pgtype.Int8, err error)
+	InsertSpanName(ctx context.Context, name string) (id pgtype.Int8, err error)
+	InsertInstrumentationLibrary(ctx context.Context, name, version, sURL string) (id pgtype.Int8, err error)
 	InsertTs(rows Data) (uint64, error)
 	InsertMetadata([]Metadata) (uint64, error)
 	CompleteMetricCreation() error
